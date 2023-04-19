@@ -1,13 +1,19 @@
-from fastapi import APIRouter, FastAPI, File, HTTPException, UploadFile, Query
+from fastapi import APIRouter, FastAPI, File, HTTPException, UploadFile, Query, BackgroundTasks, Security
 from enum import Enum
-from typing import Union, Optional
+from typing import Union, Optional, List
 from fastapi.responses import FileResponse
-from ..visitor.api import get_all_vendors, get_all_elt_visitors
+from ..visitor.api import get_all_vendors, get_all_elt_visitors, get_all_visitors
+from ..employee.api import get_all_employee_data
+from ..scopes import scope_settings
+from ..visit.api import view_visit_query_datewise
+from authentication.api import get_current_user
 import pathlib
 import csv
 import pandas as pd
 import json
 import xlsxwriter
+from fastapi.encoders import jsonable_encoder
+
 #from reports import router as reports_router
 
 
@@ -40,6 +46,7 @@ class MediaType(str, Enum):
 
 
 def create_file(data, file_format, file_name, file_path):
+
     if file_format == FileFormat.csv:
         # Create CSV file
         #file_path = pathlib.Path(file_path) / f"{file_name}.csv"
@@ -47,16 +54,21 @@ def create_file(data, file_format, file_name, file_path):
         #     writer = csv.writer(file)
         #     writer.writerows(data)
         df=pd.DataFrame(data)
-        df.to_csv(file_name)
+        df.to_csv(file_name, index=False)
+        
     elif file_format == FileFormat.xlsx:
         # Create Excel file
         #file_path = pathlib.Path(file_path) / f"{file_name}.xlsx"
-        workbook = xlsxwriter.Workbook(file_name)
-        worksheet = workbook.add_worksheet()
-        for row_num, row_data in enumerate(data):
-            for col_num, col_value in enumerate(row_data):
-                worksheet.write(row_num, col_num, col_value)
-        workbook.close()
+        df=pd.DataFrame(data)
+        writer = pd.ExcelWriter(file_name, engine='xlsxwriter')
+        df.to_excel(writer, sheet_name='Sheet1', index=False)
+        writer.save()
+        # workbook = xlsxwriter.Workbook(file_name)
+        # worksheet = workbook.add_worksheet()
+        # for row_num, row_data in enumerate(data):
+        #     for col_num, col_value in enumerate(row_data):
+        #         worksheet.write(row_num, col_num, col_value)
+        # workbook.close()
     elif file_format == FileFormat.json:
         # Create JSON file
         #file_path = pathlib.Path(file_path) / f"{file_name}.json"
@@ -69,66 +81,65 @@ def create_file(data, file_format, file_name, file_path):
 @app.get("/reports/")
 async def export_report(
     file_format: FileFormat,
+    file_name: Optional[str] = None,
+    background_tasks:BackgroundTasks,
     visitor_type: Optional[str] = Query(None, max_length=50),
-) -> FileResponse:
+    to_date: Optional[str] = Query(None, max_length=50),
+    from_date:Optional[str] = Query(None, max_length=50)
+)-> FileResponse:
     """export visitor report"""
     # if file_format not in ALLOWED_FORMATS:
     #     raise HTTPException(
     #         status_code=422, detail="Invalid file format. Allowed formats are CSV, XLSX, and JSON."
     #     )
-    file_name = f"report.{file_format}"
     
-    file_path = "C:\\Users\\Admin\\Downloads" # modify this to the desired directory path
+
+
+
+    file_path = "C:\\Users\\Admin\\Downloads" 
+    data=None
     if visitor_type == "vendor":
-        data = get_all_vendors({})
+        data = await get_all_vendors({})
     elif visitor_type == "elt":
-        data = get_all_elt_visitors()
-    else:
-        data = get_all_visitors()
+        data = await get_all_elt_visitors({})
+    elif visitor_type == "employee":
+        data = await get_all_employee_data({})
+        data = jsonable_encoder(data)
+    #data = list(data.values()
     
-    if create_file(data, file_format=file_format, file_name=file_name, file_path=file_path):
-        media_type = MediaType.get_media_type(file_format)
-        return FileResponse(file_name, media_type=media_type)
+    elif visitor_type == "visit":
+        data = await view_visit_query_datewise(
+    from_date,
+    to_date,
+    user_data={},
+    #visit_location=visit_location,
+    background_tasks=background_tasks,
+    alldata=True,
+    
+)      
+        print(data)
+    #     return await generate_report(
+    # data=data,
+    # from_date=from_date,
+    # to_date=to_date,
+    # #background_task=background_tasks,
+    # file_format=file_format,
+#)
+    elif visitor_type is None:
+        data = await get_all_visitors({})
+    else:
+        raise HTTPException(status_code=400, detail="Invalid visitor type")
+
+
+    
+    if create_file(data, file_format=file_format, file_name="reception.xlsx", file_path=file_path):
+        media_type = MediaType[file_format]
+        return FileResponse("reception.xlsx", media_type=media_type)
 
     else:
         raise HTTPException(
-            status_code=500, detail="Failed to create report."
-        )
-
-
-
-# async def export_report(
-#     file_format: FileFormat,
-#     visitor_type: Optional[str] = Query(None, max_length=50),
-# ) -> FileResponse:
-#     """export visitor report"""
-#     if file_format not in ALLOWED_FORMATS:
-#         raise HTTPException(
-#             status_code=422, detail="Invalid file format. Allowed formats are CSV, XLSX, and JSON."
-#         )
-#     file_name = f"report.{file_format}"
-#     if visitor_type == "vendor":
-#         data = get_all_vendors()
-#     elif visitor_type == "elt":
-#         data = get_all_elt_visitors()
-#     else:
-#         data = get_all_visitors()
-#     if create_file(data, file_format=file_format, file_name=file_name):
-#         return FileResponse(file_name, media_type=f"application/{file_format}")
-#     else:
-#         raise HTTPException(
-#             status_code=500, detail="Failed to create report."
-#         )
-
-
-# @app.post("/reports/")
-# async def create_report(report_file: UploadFile = File(...)):
-#     allowed_formats = [ReportFormats.csv.value, ReportFormats.xlsx.value, ReportFormats.json.value]
-#     file_format = report_file.filename.split(".")[-1]
-#     if file_format not in allowed_formats:
-#         raise HTTPException(status_code=422, detail="Invalid file format. Allowed formats are CSV, XLSX, and JSON.")
-#     # Do something with the file here
-#     return {"filename": report_file.filename, "format": file_format}
+        status_code=500, detail="Failed to create report."
+    )
 
 
 if __name__ == "__main__":
